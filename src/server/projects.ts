@@ -1,0 +1,26 @@
+import { randomUUID } from 'node:crypto';
+import { query, write } from './db.ts';
+import { DomainError, canEdit, id, isRole, type Project, type User } from '../domain/project.ts';
+type Input = {name:string;municipality:string;department:string;building_use:string;notes:string};
+export async function listProjects(user:User) { return query<Project>('SELECT p.*,m.role FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 ORDER BY p.updated_at DESC',[user.id]); }
+export async function getProject(user:User, projectId:string) { const [p]=await query<Project>('SELECT p.*,m.role FROM projects p JOIN memberships m ON m.project_id=p.id WHERE p.id=$1 AND m.user_id=$2',[id(projectId),user.id]); if(!p)throw new DomainError('Proyecto no disponible.',404);return p; }
+export async function createProject(user:User,input:Input, code?:string) {
+ if(!user.is_admin)throw new DomainError('La creación de proyectos requiere un administrador.',403);
+ const projectId=randomUUID();
+ const rows=await write<{id:string}>(`WITH p AS (INSERT INTO projects(id,code,name,municipality,department,building_use,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id), member AS (INSERT INTO memberships(project_id,user_id,role) SELECT id,$8,'director' FROM p RETURNING project_id), audit AS (INSERT INTO audit_events(id,actor_id,project_id,action,details) SELECT $9,$8,project_id,'project.created',$10::jsonb FROM member RETURNING project_id) SELECT json_agg(audit) FROM audit;`,[projectId,code||`PR-${projectId.slice(0,8).toUpperCase()}`,input.name,input.municipality,input.department,input.building_use,input.notes,user.id,randomUUID(),input]);
+ if(!rows.length)throw new Error('No se creó el proyecto.');return projectId;
+}
+export async function updateProject(user:User,projectId:string,input:Input,revision:number) {
+ id(projectId);if(!Number.isInteger(revision)||revision<1)throw new DomainError('Revisión inválida.');
+ const existing=await getProject(user,projectId);if(!canEdit(existing.role))throw new DomainError('No tienes permiso para editar.',403);
+ const rows=await write<{id:string}>(`WITH previous AS MATERIALIZED (SELECT p.* FROM projects p JOIN memberships m ON m.project_id=p.id WHERE p.id=$1 AND m.user_id=$2 AND m.role IN ('director','designer') AND p.status IN ('borrador','observado') AND p.revision=$8 FOR UPDATE OF p,m), changed AS (UPDATE projects p SET name=$3,municipality=$4,department=$5,building_use=$6,notes=$7,revision=p.revision+1,updated_at=now() FROM previous old WHERE p.id=old.id RETURNING p.id), audit AS (INSERT INTO audit_events(id,actor_id,project_id,action,details) SELECT $9,$2,c.id,'project.updated',jsonb_build_object('before',row_to_json(old),'after',$10::jsonb) FROM changed c JOIN previous old ON old.id=c.id RETURNING project_id) SELECT COALESCE(json_agg(audit),'[]'::json) FROM audit;`,[projectId,user.id,input.name,input.municipality,input.department,input.building_use,input.notes,revision,randomUUID(),input]);
+ if(!rows.length)throw new DomainError('El proyecto cambió, está bloqueado o tus permisos cambiaron. Recarga antes de editar.',409);
+}
+export async function members(user:User,projectId:string) { await getProject(user,projectId);return query<{name:string;email:string;role:string}>('SELECT u.name,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=$1 ORDER BY u.name',[projectId]); }
+export async function assignMember(user:User,projectId:string,email:string,role:unknown) {
+ const p=await getProject(user,projectId);if(p.role!=='director')throw new DomainError('Sólo el director asigna participantes.',403);
+ if(!isRole(role))throw new DomainError('Rol inválido.');
+ const rows=await write<{project_id:string}>(`WITH director AS MATERIALIZED (SELECT p.id FROM projects p JOIN memberships m ON m.project_id=p.id WHERE p.id=$1 AND m.user_id=$2 AND m.role='director' FOR UPDATE OF p,m), target AS (SELECT id FROM users WHERE email=$3 AND active AND id<>$2), old_member AS MATERIALIZED (SELECT m.role FROM memberships m JOIN target t ON t.id=m.user_id WHERE m.project_id=$1), changed AS (INSERT INTO memberships(project_id,user_id,role) SELECT d.id,t.id,$4 FROM director d CROSS JOIN target t WHERE NOT EXISTS(SELECT 1 FROM old_member WHERE role='director' AND $4<>'director') ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role RETURNING project_id,user_id), audit AS (INSERT INTO audit_events(id,actor_id,project_id,action,details) SELECT $5,$2,project_id,'membership.assigned',jsonb_build_object('user_id',user_id,'role',$4::text,'previous_role',(SELECT role FROM old_member)) FROM changed RETURNING project_id) SELECT COALESCE(json_agg(audit),'[]'::json) FROM audit;`,[projectId,user.id,email.trim().toLowerCase(),role,randomUUID()]);
+ if(!rows.length)throw new DomainError('Revisa el usuario y los permisos. No puedes cambiar tu propio rol ni degradar a un director en este incremento.');
+}
+export async function audit(user:User,projectId:string) { const p=await getProject(user,projectId);if(p.role!=='director' && p.role!=='reviewer' && p.role!=='approver')return [];return query<{action:string;name:string;created_at:string}>('SELECT a.action,u.name,a.created_at FROM audit_events a JOIN users u ON u.id=a.actor_id WHERE a.project_id=$1 ORDER BY a.created_at DESC LIMIT 40',[projectId]); }

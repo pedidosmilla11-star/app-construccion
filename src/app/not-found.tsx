@@ -1,0 +1,1 @@
+export default function NotFound() {return <main className="error-page"><h1>Expediente no disponible</h1><p>No existe o no tienes acceso.</p><a className="button" href="/projects">Volver a proyectos</a></main>;}

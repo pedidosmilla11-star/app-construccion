@@ -1,0 +1,2 @@
+'use client';
+export default function ErrorPage({reset}:{reset:()=>void}) {return <main className="error-page"><span className="eyebrow">APP CONSTRUCCIÓN</span><h1>No pudimos abrir el expediente</h1><p>Comprueba la conexión PostgreSQL y que las migraciones estén aplicadas. Tus datos no se sustituyen por información de demostración.</p><button onClick={reset}>Reintentar</button><a href="/login">Volver al acceso</a></main>;}

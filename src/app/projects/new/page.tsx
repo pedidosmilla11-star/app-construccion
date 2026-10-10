@@ -1,0 +1,4 @@
+import { redirect } from 'next/navigation';
+import { requireUser } from '../../../server/http.ts';
+import { Shell, ProjectFields } from '../../components.tsx';
+export default async function NewProject({searchParams}:{searchParams:Promise<{message?:string}>}) {const user=await requireUser();if(!user.is_admin)redirect('/projects');const {message}=await searchParams;return <Shell user={user}><div className="page-title"><div><span className="eyebrow">APERTURA DE EXPEDIENTE</span><h1>Nuevo proyecto</h1><p>Registra la información inicial. Los datos del predio se incorporarán en su módulo.</p></div></div><section className="panel form-panel">{message&&<p role="alert" className="notice">{message}</p>}<form action="/api/projects" method="post"><ProjectFields/><button>Crear expediente</button></form></section></Shell>;}
